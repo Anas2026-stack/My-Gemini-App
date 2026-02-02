@@ -1,59 +1,85 @@
 import streamlit as st
 import google.generativeai as genai
-import importlib.metadata
 
-st.set_page_config(page_title="System Check", layout="wide")
-st.title("🛠️ غرفة الصيانة وكشف الأخطاء")
+# --- إعداد الصفحة ---
+st.set_page_config(page_title="Gemini Smart Hub", layout="wide")
 
-# 1. كشف إصدار المكتبة (هل تم التحديث؟)
-try:
-    lib_version = importlib.metadata.version("google-generativeai")
-    st.write(f"### 1️⃣ إصدار المكتبة المثبت حالياً: `{lib_version}`")
-    
-    # نحتاج نسخة 0.5.0 أو أعلى ليعمل 1.5
-    if lib_version < "0.5.0":
-        st.error("⛔ كارثة: السيرفر لا يزال يستخدم نسخة قديمة! التحديث لم يطبق.")
-    else:
-        st.success("✅ ممتاز: المكتبة محدثة وتدعم Gemini 1.5.")
-except:
-    st.warning("⚠️ تعذر تحديد الإصدار.")
+# --- التنسيق العربي ---
+st.markdown("""
+<style>
+    .stTextArea textarea {direction: rtl; font-size: 16px;}
+    div[data-testid="stChatMessage"] {direction: rtl; text-align: right;}
+</style>
+""", unsafe_allow_html=True)
 
-# 2. فحص المفاتيح
+# --- سحب المفاتيح ---
 api_keys = [v for k, v in st.secrets.items() if k.startswith("KEY_")]
 if not api_keys:
-    st.error("❌ المفاتيح مفقودة في Secrets!")
+    st.error("❌ المفاتيح مفقودة! تأكد من وضعها في Secrets.")
     st.stop()
-else:
-    st.success(f"✅ تم العثور على {len(api_keys)} مفتاح.")
 
-# 3. سرد الموديلات المتاحة (الحقيقة الكاملة)
-st.write("### 2️⃣ الموديلات المسموح لك باستخدامها:")
-try:
-    genai.configure(api_key=api_keys[0])
+# إعداد الاتصال
+genai.configure(api_key=api_keys[0])
+
+# --- الشريط الجانبي الذكي (Auto-Detection) ---
+with st.sidebar:
+    st.header("🎮 إعدادات المحرك")
     
-    my_models = []
-    # نجلب القائمة من جوجل مباشرة
-    for m in genai.list_models():
-        if 'generateContent' in m.supported_generation_methods:
-            my_models.append(m.name)
+    # جلب الموديلات المتاحة فعلياً لحسابك
+    try:
+        model_list = []
+        for m in genai.list_models():
+            if 'generateContent' in m.supported_generation_methods:
+                model_list.append(m.name)
+        # ترتيبها ليظهر الأحدث أولاً
+        model_list.sort(reverse=True)
+    except:
+        model_list = ["models/gemini-1.5-flash"] # احتياطي في حال الفشل
     
-    if not my_models:
-        st.error("لم يتم العثور على أي موديل! قد تكون المشكلة في المفتاح أو الدولة.")
-    else:
-        # عرض القائمة في صندوق اختيار
-        selected_model = st.selectbox("اختر موديلاً من القائمة المتاحة (الموثقة):", my_models)
-        st.info(f"💡 نصيحة: عادة يكون اسمه `models/gemini-1.5-flash` أو `models/gemini-pro`")
+    # القائمة المنسدلة (لن تختار خطأ بعد اليوم)
+    selected_model = st.selectbox("اختر الموديل النشط:", model_list)
+    
+    # باقي الإعدادات
+    temp = st.slider("درجة الإبداع:", 0.0, 1.0, 0.7)
+    if st.button("🗑️ مسح الذاكرة"):
+        st.session_state.messages = []
+        st.rerun()
 
-        # 4. تجربة حية
-        if st.button("🔴 اضغط هنا لاختبار الموديل المختار"):
-            with st.spinner("جاري الاتصال..."):
-                try:
-                    model = genai.GenerativeModel(selected_model)
-                    response = model.generate_content("هل تعمل؟ أجب بكلمة واحدة: نعم.")
-                    st.success(f"🎉 النتيجة: {response.text}")
-                    st.balloons()
-                except Exception as e:
-                    st.error(f"فشل الاختبار: {e}")
+# --- واجهة الدردشة ---
+st.title(f"🤖 {selected_model.split('/')[-1]}")
 
-except Exception as e:
-    st.error(f"حدث خطأ أثناء الاتصال بجوجل: {e}")
+# تهيئة الذاكرة
+if "messages" not in st.session_state:
+    st.session_state.messages = []
+
+# عرض المحادثة السابقة
+for msg in st.session_state.messages:
+    with st.chat_message(msg["role"]):
+        st.markdown(msg["content"])
+
+# استقبال السؤال
+if prompt := st.chat_input("تحدث معي بالعربية..."):
+    # عرض سؤال المستخدم
+    st.session_state.messages.append({"role": "user", "content": prompt})
+    with st.chat_message("user"):
+        st.markdown(prompt)
+
+    # المعالجة
+    with st.chat_message("assistant"):
+        with st.spinner('جاري التفكير...'):
+            try:
+                # إعداد الموديل المختار
+                model = genai.GenerativeModel(selected_model)
+                
+                # تحويل الذاكرة لتنسيق جوجل
+                history = [{"role": m["role"].replace("assistant", "model"), "parts": [m["content"]]} 
+                           for m in st.session_state.messages[:-1]]
+                
+                chat = model.start_chat(history=history)
+                response = chat.send_message(prompt, generation_config={"temperature": temp})
+                
+                st.markdown(response.text)
+                st.session_state.messages.append({"role": "assistant", "content": response.text})
+                
+            except Exception as e:
+                st.error(f"⚠️ حدث خطأ: {e}")
