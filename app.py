@@ -1,101 +1,84 @@
 import streamlit as st
 import google.generativeai as genai
-import time
 
 # --- إعداد الصفحة ---
-st.set_page_config(page_title="Gemini Pro Workstation", layout="wide")
+st.set_page_config(page_title="Gemini Auto-Pilot", layout="wide")
 
-# --- التنسيق العربي الصارم ---
+# --- التنسيق العربي ---
 st.markdown("""
 <style>
-    .stTextArea textarea {direction: rtl; font-size: 16px; font-family: 'Segoe UI', sans-serif;}
-    div[data-testid="stChatMessage"] {direction: rtl; text-align: right; background-color: #1E1E1E; border-radius: 10px; padding: 10px;}
-    .stSelectbox, .stButton button {direction: rtl;}
-    h1, h2, h3 {text-align: right;}
+    .stTextArea textarea {direction: rtl; font-size: 16px;}
+    div[data-testid="stChatMessage"] {direction: rtl; text-align: right;}
 </style>
 """, unsafe_allow_html=True)
 
-# --- سحب المفاتيح ---
+# --- 1. المصادقة (Auth) ---
 api_keys = [v for k, v in st.secrets.items() if k.startswith("KEY_")]
 if not api_keys:
-    st.error("❌ المفاتيح مفقودة! راجع إعدادات Secrets.")
+    st.error("المفاتيح مفقودة في Secrets")
     st.stop()
 
-# --- القائمة البيضاء (الموديلات المضمونة فقط) ---
-# نستبعد الموديلات التجريبية التي تسبب مشاكل (Limit 0)
-SAFE_MODELS = {
-    "Gemini 1.5 PRO (العقل المدبر - للمهام المعقدة)": "gemini-1.5-pro",
-    "Gemini 2.0 Flash Exp (سريع جداً - ذكي)": "gemini-2.0-flash-exp",
-    "Gemini 1.5 Flash (اقتصادي)": "gemini-1.5-flash"
-}
+genai.configure(api_key=api_keys[0])
 
-# --- الشريط الجانبي ---
+# --- 2. الشريط الجانبي (المحرك الذكي) ---
 with st.sidebar:
-    st.header("⚙️ وحدة التحكم")
+    st.header("⚙️ المحرك التلقائي")
     
-    # اختيار الموديل من القائمة الآمنة
-    selected_name = st.radio("اختر المحرك:", list(SAFE_MODELS.keys()), index=0)
-    model_id = SAFE_MODELS[selected_name]
+    # هذه هي الخطوة السحرية: نسأل جوجل "ماذا لديك؟" بدلاً من التخمين
+    available_models = []
+    try:
+        for m in genai.list_models():
+            if 'generateContent' in m.supported_generation_methods:
+                available_models.append(m.name)
+        available_models.sort(reverse=True) # الأحدث أولاً
+    except Exception as e:
+        st.error(f"فشل الاتصال بجوجل: {e}")
     
-    st.info(f"✅ المحرك النشط: `{model_id}`")
+    if not available_models:
+        st.warning("لم يتم العثور على موديلات. تأكد من المفتاح.")
+        st.stop()
+        
+    # القائمة المنسدلة تعرض فقط ما هو "موجود وحقيقي"
+    selected_model = st.selectbox("اختر الموديل المتاح:", available_models)
     
-    temp = st.slider("درجة الإبداع (Temperature):", 0.0, 1.0, 0.4, help="0.0 للدقة الصارمة، 1.0 للتأليف")
+    st.success(f"تم الاتصال بـ: {selected_model}")
     
-    if st.button("🗑️ تنظيف الذاكرة وبدء جديد", type="primary"):
+    # زر إعادة الضبط
+    if st.button("بدء محادثة جديدة"):
         st.session_state.messages = []
         st.rerun()
 
-# --- إعداد المحرك ---
-genai.configure(api_key=api_keys[0])
-model = genai.GenerativeModel(model_id)
+# --- 3. تشغيل التطبيق ---
+st.title("🤖 المساعد الذكي (بدون أخطاء)")
 
-st.title("🧠 المستشار التقني (Pro)")
-
-# --- إدارة الذاكرة ---
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
-# عرض الرسائل السابقة
+# عرض الشات
 for msg in st.session_state.messages:
-    role = "user" if msg["role"] == "user" else "assistant"
-    with st.chat_message(role):
+    with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
 
-# --- معالجة الإدخال ---
-if prompt := st.chat_input("اكتب مشكلتك المعقدة هنا..."):
-    # تخزين وعرض سؤال المستخدم
+# الإدخال والمعالجة
+if prompt := st.chat_input("اكتب هنا..."):
     st.session_state.messages.append({"role": "user", "content": prompt})
     with st.chat_message("user"):
         st.markdown(prompt)
 
-    # التفكير والرد
     with st.chat_message("assistant"):
-        message_placeholder = st.empty()
-        full_response = ""
-        
         try:
-            # تحضير السياق (آخر 10 رسائل فقط لتفادي امتلاء الذاكرة)
-            history = [{"role": m["role"].replace("assistant", "model"), "parts": [m["content"]]} 
-                       for m in st.session_state.messages[:-1][-10:]]
+            # استخدام الموديل المختار ديناميكياً
+            model = genai.GenerativeModel(selected_model)
             
-            chat = model.start_chat(history=history)
+            # تجهيز التاريخ
+            history_data = [{"role": m["role"].replace("assistant", "model"), "parts": [m["content"]]} 
+                           for m in st.session_state.messages[:-1]]
             
-            # البث المباشر (Stream) للرد
-            with st.spinner(f'جاري التفكير بعمق عبر {model_id}...'):
-                response_stream = chat.send_message(prompt, stream=True, generation_config={"temperature": temp})
-                
-                for chunk in response_stream:
-                    if chunk.text:
-                        full_response += chunk.text
-                        message_placeholder.markdown(full_response + "▌")
-                
-                message_placeholder.markdown(full_response)
-                st.session_state.messages.append({"role": "assistant", "content": full_response})
-
+            chat = model.start_chat(history=history_data)
+            response = chat.send_message(prompt)
+            
+            st.markdown(response.text)
+            st.session_state.messages.append({"role": "assistant", "content": response.text})
+            
         except Exception as e:
-            # التعامل مع أخطاء الحظر (Quota)
-            err_msg = str(e)
-            if "429" in err_msg:
-                st.error("⏳ تجاوزت الحد المسموح للدقيقة. انتظر 30 ثانية ثم حاول مجدداً.")
-            else:
-                st.error(f"حدث خطأ تقني: {e}")
+            st.error(f"حدث خطأ أثناء الرد: {e}")
